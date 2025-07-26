@@ -1,0 +1,613 @@
+<script type="text/javascript">
+        var gk_isXlsx = false;
+        var gk_xlsxFileLookup = {};
+        var gk_fileData = {};
+        function filledCell(cell) {
+          return cell !== '' && cell != null;
+        }
+        function loadFileData(filename) {
+        if (gk_isXlsx && gk_xlsxFileLookup[filename]) {
+            try {
+                var workbook = XLSX.read(gk_fileData[filename], { type: 'base64' });
+                var firstSheetName = workbook.SheetNames[0];
+                var worksheet = workbook.Sheets[firstSheetName];
+
+                // Convert sheet to JSON to filter blank rows
+                var jsonData = XLSX.utils.sheet_to_json(worksheet, { header: 1, blankrows: false, defval: '' });
+                // Filter out blank rows (rows where all cells are empty, null, or undefined)
+                var filteredData = jsonData.filter(row => row.some(filledCell));
+
+                // Heuristic to find the header row by ignoring rows with fewer filled cells than the next row
+                var headerRowIndex = filteredData.findIndex((row, index) =>
+                  row.filter(filledCell).length >= filteredData[index + 1]?.filter(filledCell).length
+                );
+                // Fallback
+                if (headerRowIndex === -1 || headerRowIndex > 25) {
+                  headerRowIndex = 0;
+                }
+
+                // Convert filtered JSON back to CSV
+                var csv = XLSX.utils.aoa_to_sheet(filteredData.slice(headerRowIndex)); // Create a new sheet from filtered array of arrays
+                csv = XLSX.utils.sheet_to_csv(csv, { header: 1 });
+                return csv;
+            } catch (e) {
+                console.error(e);
+                return "";
+            }
+        }
+        return gk_fileData[filename] || "";
+        }
+        </script><!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <title>Dots & Dashes v3</title>
+  <style>
+    body {
+      margin: 0;
+      padding: 0;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      height: 100vh;
+      font-family: Arial, sans-serif;
+      overflow: hidden;
+      background-color: #000;
+    }
+    #gameContainer {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      width: 100%;
+      max-width: 600px;
+      height: 100%;
+    }
+    #uiBar {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      width: 90%;
+      padding: 10px 0;
+      color: white;
+    }
+    #canvas {
+      touch-action: none;
+      background-color: black;
+      border: 2px solid white;
+    }
+    #popup, #menuOverlay {
+      display: none;
+      position: fixed;
+      top: 50%;
+      left: 50%;
+      transform: translate(-50%, -50%);
+      background-color: rgba(0, 0, 0, 0.9);
+      color: white;
+      padding: 20px;
+      border-radius: 10px;
+      text-align: center;
+      backdrop-filter: blur(5px);
+      z-index: 10;
+    }
+    #menuOverlay {
+      z-index: 15;
+    }
+    button {
+      padding: 10px 20px;
+      font-size: 16px;
+      cursor: pointer;
+      margin: 5px;
+      background-color: black;
+      color: white;
+      border: 1px solid white;
+      border-radius: 5px;
+    }
+    .theme-light {
+      background-color: #f0f0f0;
+    }
+    .theme-light #canvas {
+      background-color: white;
+      border-color: black;
+    }
+    .theme-light button, .theme-light #uiBar {
+      color: black;
+      background-color: white;
+      border: 1px solid black;
+    }
+    .theme-dark {
+      background-color: #333;
+    }
+    .theme-dark #canvas {
+      background-color: #444;
+      border-color: white;
+    }
+    .theme-dark button, .theme-dark #uiBar {
+      color: white;
+      background-color: black;
+      border: 1px solid white;
+    }
+    .theme-amoled {
+      background-color: #000;
+    }
+    .theme-amoled #canvas {
+      background-color: black;
+      border-color: white;
+    }
+    .theme-amoled button, .theme-amoled #uiBar {
+      color: white;
+      background-color: black;
+      border: 1px solid white;
+    }
+  </style>
+</head>
+<body class="theme-amoled">
+  <div id="gameContainer">
+    <div id="uiBar">
+      <button onclick="startGame()">Start</button>
+      <div>Run <span id="runDisplay">1</span>, Level <span id="levelDisplay">1</span></div>
+      <div>Time: <span id="timer">0:00.000</span></div>
+      <div>Lines: <span id="linesCounter">0/2</span></div>
+      <button onclick="undoLine()">Undo</button>
+      <button onclick="openMenu()">Menu</button>
+    </div>
+    <canvas id="canvas"></canvas>
+    <div id="popup">
+      <h2 id="popupMessage"></h2>
+      <button onclick="closePopup()">Next Level</button>
+    </div>
+    <div id="menuOverlay">
+      <h2>Menu</h2>
+      <button onclick="toggleTheme('light')">Light Theme</button>
+      <button onclick="toggleTheme('dark')">Dark Theme</button>
+      <button onclick="toggleTheme('amoled')">AMOLED Theme</button>
+      <button onclick="toggleUIBarPosition()">Toggle UI Position</button>
+      <button onclick="toggleDebug()">Debug: <span id="debugStatus">Off</span></button>
+      <button onclick="saveLog()">Save Log</button>
+      <button onclick="closeMenu()">Close</button>
+    </div>
+  </div>
+  <script>
+    // Version: v3
+    const USE_TURSO = false; // Toggle for future Turso integration
+
+    const canvas = document.getElementById('canvas');
+    const ctx = canvas.getContext('2d');
+    const timerDisplay = document.getElementById('timer');
+    const linesCounter = document.getElementById('linesCounter');
+    const levelDisplay = document.getElementById('levelDisplay');
+    const runDisplay = document.getElementById('runDisplay');
+    const popup = document.getElementById('popup');
+    const popupMessage = document.getElementById('popupMessage');
+    const menuOverlay = document.getElementById('menuOverlay');
+    const debugStatus = document.getElementById('debugStatus');
+    const gameContainer = document.getElementById('gameContainer');
+    const uiBar = document.getElementById('uiBar');
+
+    let GRID_ROWS = 5;
+    let GRID_COLS = 3;
+    let MAX_LINES = 2;
+    let DOT_RADIUS = 20;
+    let GRID_MARGIN = 20;
+    let dots = [];
+    let lines = [];
+    let selectedDot = null;
+    let gameActive = false;
+    let startTime = 0;
+    let debugLog = [];
+    let debugEnabled = false;
+    let lastTouchTime = 0;
+    const DEBOUNCE_TIME = 100;
+    let level = 1;
+    let run = 1;
+    let levels = [
+      {
+        id: 1,
+        rows: 5,
+        cols: 3,
+        max_lines: 3,
+        colored_dots: [
+          { row: 1, col: 1, color: '#ff9999' },
+          { row: 3, col: 1, color: '#99ccff' }
+        ],
+        removed_dots: []
+      },
+      {
+        id: 2,
+        rows: 5,
+        cols: 3,
+        max_lines: 6,
+        colored_dots: [
+          { row: 0, col: 0, color: '#ff9999' },
+          { row: 4, col: 2, color: '#99ccff' }
+        ],
+        removed_dots: [
+          { row: 2, col: 1 },
+          { row: 3, col: 0 }
+        ]
+      },
+      {
+        id: 3,
+        rows: 5,
+        cols: 3,
+        max_lines: 7,
+        colored_dots: [
+          { row: 0, col: 2, color: '#ff9999' },
+          { row: 4, col: 0, color: '#99ccff' }
+        ],
+        removed_dots: [
+          { row: 1, col: 1 },
+          { row: 2, col: 2 },
+          { row: 3, col: 1 }
+        ]
+      }
+    ]; // Fallback mock levels (subset for testing)
+
+    // Load levels from levels.json
+    async function loadLevels() {
+      if (USE_TURSO) {
+        // TODO: Fetch levels from Turso: SELECT * FROM levels WHERE id BETWEEN ? AND ?
+        // Example: const response = await fetch('/api/levels');
+        log('Turso not implemented, using fallback levels');
+        return;
+      }
+      try {
+        const response = await fetch('./levels.json', { cache: 'no-store' });
+        if (!response.ok) {
+          throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+        }
+        levels = await response.json();
+        if (!Array.isArray(levels) || levels.length === 0) {
+          throw new Error('Invalid or empty levels.json');
+        }
+        log(`Loaded ${levels.length} levels from levels.json`);
+      } catch (error) {
+        log(`Error loading levels.json: ${error.message}. Using fallback levels (${levels.length} levels).`);
+      }
+    }
+
+    // Storage abstraction
+    function saveScore(score) {
+      if (USE_TURSO) {
+        // TODO: POST to Turso API: INSERT INTO scores (user_id, level_id, run, time_taken, lines_used, bonus, final_score)
+      } else {
+        const scores = JSON.parse(localStorage.getItem('dots_dashes_scores') || '[]');
+        scores.push(score);
+        localStorage.setItem('dots_dashes_scores', JSON.stringify(scores));
+      }
+      log(`Score saved: Level ${score.level_id}, Run ${score.run}, Score ${score.final_score}`);
+    }
+
+    function getPersonalBest(level_id, run) {
+      if (USE_TURSO) {
+        // TODO: Query Turso: SELECT MIN(final_score) FROM scores WHERE user_id = ? AND level_id = ? AND run = ?
+        return null;
+      } else {
+        const scores = JSON.parse(localStorage.getItem('dots_dashes_scores') || '[]');
+        const levelScores = scores.filter(s => s.level_id === level_id && s.run === run);
+        return levelScores.length ? Math.min(...levelScores.map(s => s.final_score)) : null;
+      }
+    }
+
+    function saveProgress() {
+      if (USE_TURSO) {
+        // TODO: Update Turso: UPDATE progress SET run = ?, current_level = ? WHERE user_id = ?
+      } else {
+        localStorage.setItem('dots_dashes_progress', JSON.stringify({run, current_level: level}));
+      }
+    }
+
+    function loadProgress() {
+      if (USE_TURSO) {
+        // TODO: Query Turso: SELECT run, current_level FROM progress WHERE user_id = ?
+        return {run: 1, current_level: 1};
+      } else {
+        const progress = JSON.parse(localStorage.getItem('dots_dashes_progress') || '{}');
+        return {run: progress.run || 1, current_level: progress.current_level || 1};
+      }
+    }
+
+    function log(message) {
+      if (debugEnabled) {
+        const entry = `[${new Date().toISOString()}] ${message}`;
+        debugLog.push(entry);
+        console.log(entry);
+      }
+    }
+
+    function saveLog() {
+      const blob = new Blob([debugLog.join('\n')], { type: 'text/plain' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `dots_dashes_log_v3_${new Date().toISOString().replace(/[:.]/g, '-')}.txt`;
+      a.click();
+      URL.revokeObjectURL(url);
+      log('Log saved');
+    }
+
+    function resizeCanvas() {
+      const dpr = window.devicePixelRatio || 1;
+      const uiHeight = uiBar.offsetHeight;
+      const maxHeight = window.innerHeight - uiHeight - 20;
+      const maxWidth = window.innerWidth * 0.9;
+      const cellSize = Math.min(maxHeight / (GRID_ROWS + 1), maxWidth / (GRID_COLS + 1));
+      DOT_RADIUS = cellSize * 0.2;
+      GRID_MARGIN = cellSize * 0.1;
+      canvas.width = (GRID_COLS * cellSize + 2 * GRID_MARGIN) * dpr;
+      canvas.height = (GRID_ROWS * cellSize + 2 * GRID_MARGIN) * dpr;
+      canvas.style.width = `${canvas.width / dpr}px`;
+      canvas.style.height = `${canvas.height / dpr}px`;
+      ctx.scale(dpr, dpr);
+      initGrid(cellSize);
+      draw();
+      log(`Canvas resized: ${canvas.width/dpr}x${canvas.height/dpr}, cellSize: ${cellSize}`);
+    }
+
+    function initGrid(cellSize) {
+      const levelConfig = levels[Math.min(level - 1, levels.length - 1)];
+      GRID_ROWS = levelConfig.rows;
+      GRID_COLS = levelConfig.cols;
+      MAX_LINES = levelConfig.max_lines;
+      dots = [];
+      for (let row = 0; row < GRID_ROWS; row++) {
+        for (let col = 0; col < GRID_COLS; col++) {
+          if (levelConfig.removed_dots.some(d => d.row === row && d.col === col)) continue;
+          const dot = {
+            x: GRID_MARGIN + col * cellSize + cellSize / 2,
+            y: GRID_MARGIN + row * cellSize + cellSize / 2,
+            row,
+            col,
+            color: '#ccc'
+          };
+          const coloredDot = levelConfig.colored_dots.find(d => d.row === row && d.col === col);
+          if (coloredDot) dot.color = coloredDot.color;
+          dots.push(dot);
+        }
+      }
+      linesCounter.textContent = `0/${MAX_LINES}`;
+      log(`Grid initialized: ${GRID_COLS}x${GRID_ROWS}, Level: ${level}, Run: ${run}, Max Lines: ${MAX_LINES}`);
+    }
+
+    function draw() {
+      const theme = document.body.className;
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      dots.forEach(dot => {
+        ctx.beginPath();
+        ctx.arc(dot.x, dot.y, DOT_RADIUS, 0, 2 * Math.PI);
+        ctx.fillStyle = dot.color;
+        ctx.fill();
+        ctx.strokeStyle = theme.includes('light') ? 'black' : 'white';
+        ctx.lineWidth = 2;
+        ctx.stroke();
+        if (dot === selectedDot) {
+          ctx.beginPath();
+          ctx.arc(dot.x, dot.y, DOT_RADIUS * 1.2, 0, 2 * Math.PI);
+          ctx.strokeStyle = 'yellow';
+          ctx.stroke();
+        }
+      });
+      lines.forEach(line => {
+        ctx.beginPath();
+        ctx.moveTo(line.start.x, line.start.y);
+        ctx.lineTo(line.end.x, line.end.y);
+        ctx.strokeStyle = theme.includes('light') ? 'black' : 'white';
+        ctx.lineWidth = 5;
+        ctx.stroke();
+      });
+    }
+
+    function getDotAt(x, y) {
+      return dots.find(dot => {
+        const dx = dot.x - x;
+        const dy = dot.y - y;
+        return Math.sqrt(dx * dx + dy * dy) < DOT_RADIUS * 1.5;
+      });
+    }
+
+    function handleInput(x, y, isTouch) {
+      if (!gameActive) return;
+      const now = Date.now();
+      if (isTouch && now - lastTouchTime < DEBOUNCE_TIME) return;
+      if (isTouch) lastTouchTime = now;
+
+      const dot = getDotAt(x, y);
+      if (!dot) {
+        log(`No dot found at (${x}, ${y})`);
+        return;
+      }
+
+      if (!selectedDot) {
+        if (lines.length === 0 && dot.color === '#ccc') {
+          log('First dot must be colored');
+          return;
+        }
+        selectedDot = dot;
+        draw();
+        log(`Selected dot at (${dot.row}, ${dot.col})`);
+      } else if (selectedDot !== dot) {
+        const isAdjacent =
+          (Math.abs(selectedDot.row - dot.row) === 1 && selectedDot.col === dot.col) ||
+          (Math.abs(selectedDot.col - dot.col) === 1 && selectedDot.row === dot.row);
+        if (!isAdjacent) {
+          log('Dots not adjacent');
+          selectedDot = null;
+          draw();
+          return;
+        }
+        if (lines.length >= MAX_LINES) {
+          log('Max lines reached');
+          selectedDot = null;
+          draw();
+          return;
+        }
+        if (lines.some(line => 
+          (line.start === selectedDot && line.end === dot) || 
+          (line.start === dot && line.end === selectedDot))) {
+          log('Line already exists');
+          selectedDot = null;
+          draw();
+          return;
+        }
+        lines.push({ start: selectedDot, end: dot });
+        linesCounter.textContent = `${lines.length}/${MAX_LINES}`;
+        draw();
+        log(`Line drawn from (${selectedDot.row}, ${selectedDot.col}) to (${dot.row}, ${dot.col})`);
+        checkWin();
+        selectedDot = dot;
+      }
+    }
+
+    function checkWin() {
+      const connectedDots = new Set();
+      lines.forEach(line => {
+        connectedDots.add(dots.indexOf(line.start));
+        connectedDots.add(dots.indexOf(line.end));
+      });
+      const coloredDots = dots.filter(dot => dot.color !== '#ccc');
+      const allColoredConnected = coloredDots.every(dot => connectedDots.has(dots.indexOf(dot)));
+      if (allColoredConnected && connectedDots.size >= coloredDots.length) {
+        gameActive = false;
+        const endTime = performance.now();
+        const timeTaken = (endTime - startTime) / 1000;
+        const bonus = (MAX_LINES - lines.length) * 2;
+        const finalScore = Math.max(0, timeTaken - bonus);
+        const timeStr = formatTime(finalScore);
+        const personalBest = getPersonalBest(level, run);
+        saveScore({
+          level_id: level,
+          run: run,
+          time_taken: timeTaken,
+          lines_used: lines.length,
+          bonus: bonus,
+          final_score: finalScore,
+          timestamp: new Date().toISOString()
+        });
+        popupMessage.innerHTML = `Puzzle Complete!<br>Run ${run}, Level ${level}<br>Time: ${formatTime(timeTaken)}<br>Bonus: ${bonus}s<br>Final Score: ${timeStr}${personalBest ? `<br>Personal Best: ${formatTime(personalBest)}` : ''}`;
+        popup.style.display = 'block';
+        log(`Game won: Level=${level}, Run=${run}, Time=${timeTaken}s, Bonus=${bonus}s, Score=${finalScore}s`);
+      }
+    }
+
+    function formatTime(seconds) {
+      const minutes = Math.floor(seconds / 60);
+      const secs = (seconds % 60).toFixed(3);
+      return `${minutes}:${secs.padStart(6, '0')}`;
+    }
+
+    function startGame() {
+      gameActive = true;
+      lines = [];
+      selectedDot = null;
+      linesCounter.textContent = `0/${MAX_LINES}`;
+      runDisplay.textContent = run;
+      levelDisplay.textContent = level;
+      startTime = performance.now();
+      resizeCanvas();
+      requestAnimationFrame(updateTimer);
+      saveProgress();
+      log(`Game started: Level ${level}, Run ${run}`);
+    }
+
+    function updateTimer() {
+      if (!gameActive) return;
+      const elapsed = (performance.now() - startTime) / 1000;
+      timerDisplay.textContent = formatTime(elapsed);
+      requestAnimationFrame(updateTimer);
+    }
+
+    function undoLine() {
+      if (!gameActive || lines.length === 0) return;
+      lines.pop();
+      selectedDot = null;
+      linesCounter.textContent = `${lines.length}/${MAX_LINES}`;
+      draw();
+      log('Last line undone');
+    }
+
+    function toggleTheme(theme) {
+      document.body.className = `theme-${theme}`;
+      draw();
+      log(`Theme changed to ${theme}`);
+    }
+
+    function toggleUIBarPosition() {
+      gameContainer.style.flexDirection = gameContainer.style.flexDirection === 'column-reverse' ? 'column' : 'column-reverse';
+      resizeCanvas();
+      log(`UI bar position toggled to ${gameContainer.style.flexDirection}`);
+    }
+
+    function toggleDebug() {
+      debugEnabled = !debugEnabled;
+      debugStatus.textContent = debugEnabled ? 'On' : 'Off';
+      log(`Debug mode ${debugEnabled ? 'enabled' : 'disabled'}`);
+    }
+
+    function showPopup(message) {
+      popupMessage.innerHTML = message;
+      popup.style.display = 'block';
+    }
+
+    function closePopup() {
+      popup.style.display = 'none';
+      level++;
+      if (level > levels.length) {
+        level = 1;
+        run++;
+        saveProgress();
+      }
+      if (level % 5 === 0 && GRID_COLS < 10) {
+        GRID_COLS = Math.min(GRID_COLS + 1, 10);
+        GRID_ROWS = Math.floor(GRID_COLS * 16 / 9);
+      }
+      startGame();
+      log(`Next level: ${level}, Run: ${run}, Grid: ${GRID_COLS}x${GRID_ROWS}`);
+    }
+
+    function openMenu() {
+      menuOverlay.style.display = 'block';
+      log('Menu opened');
+    }
+
+    function closeMenu() {
+      menuOverlay.style.display = 'none';
+      log('Menu closed');
+    }
+
+    canvas.addEventListener('click', e => {
+      if (!gameActive) return;
+      const rect = canvas.getBoundingClientRect();
+      const x = (e.clientX - rect.left) * (canvas.width / rect.width) / (window.devicePixelRatio || 1);
+      const y = (e.clientY - rect.top) * (canvas.height / rect.height) / (window.devicePixelRatio || 1);
+      handleInput(x, y, false);
+    });
+
+    canvas.addEventListener('touchstart', e => {
+      if (!gameActive) return;
+      e.preventDefault();
+      const rect = canvas.getBoundingClientRect();
+      const x = (e.touches[0].clientX - rect.left) * (canvas.width / rect.width) / (window.devicePixelRatio || 1);
+      const y = (e.touches[0].clientY - rect.top) * (canvas.height / rect.height) / (window.devicePixelRatio || 1);
+      handleInput(x, y, true);
+    });
+
+    window.addEventListener('resize', () => {
+      resizeCanvas();
+      log('Window resized');
+    });
+
+    // Initialize
+    (async () => {
+      await loadLevels();
+      if (levels.length <= 1) {
+        log('Warning: Only one or no levels loaded, progression may be limited');
+      }
+      const progress = loadProgress();
+      level = progress.current_level;
+      run = progress.run;
+      resizeCanvas();
+      log(`Initialized with ${levels.length} levels`);
+    })();
+  </script>
+</body>
+</html>
